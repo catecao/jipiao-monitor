@@ -1,0 +1,69 @@
+# 机票价格监控 · 示例配置
+# 使用：cp config.example.yaml config.yaml，然后改 routes 和 notifier
+
+# 监控的航线（可以写多条）
+routes:
+  - from: SHA                   # 出发城市三字码（用城市码：上海 SHA 同时含虹桥+浦东，别写 PVG）
+    from_name: 上海
+    to: CTU                     # 到达城市三字码
+    to_name: 成都
+    dates:                      # 出发日期，写成 YYYY-MM-DD，可以多天
+      - "2026-12-20"
+      - "2026-12-21"
+    alert_threshold: 500        # 低于等于这个价（票面价，不含机建燃油）就推送
+
+# 数据源：四家低价日历，免登录、不开浏览器
+platforms:
+  - fliggy_cal                  # 飞猪（连续请求会被限流几分钟，拿不到时自动跳过）
+  - tongcheng                   # 同程（带航班号和起飞时间）
+  - tuniu_cal                   # 途牛
+  - ctrip_cal                   # 携程
+
+# 调度：约 90 分钟一轮，±30 分钟随机扰动
+schedule:
+  interval_minutes: 90
+  jitter_minutes: 30
+  run_on_start: true
+
+# macOS launchd 服务名（日期全过期时自动停用要用到；和 plist 里的 Label 保持一致）
+service:
+  launchd_label: com.jipiao.monitor
+
+crawler:
+  timeout_seconds: 45
+  delay_min: 3                  # 请求间随机等待（秒）
+  delay_max: 8
+  max_attempts: 3
+  backoff_seconds: 5
+  debug: false
+  debug_dir: debug
+  user_data_dir: user_data
+
+output:
+  db_path: data/prices.db
+  log_path: logs/monitor.log
+
+# 推送：可同时开多个通道
+notifier:
+  push_drop_min: 30             # 比上次推送价再降 ≥ ¥30 才再推
+  push_rise_min: 50             # 涨 ≥ ¥50 才再推
+
+  # Telegram（推荐，手机上收）
+  telegram:
+    enabled: false
+    # 凭证放在单独文件里，不写进本配置。文件内容两行：
+    #   TG_BOT_TOKEN=123456:ABC...
+    #   TG_CHAT_ID=123456789
+    env_file: ~/.config/jipiao/telegram.env
+    chat_key: TG_CHAT_ID
+    proxy: ""                   # 需要代理时填，如 http://127.0.0.1:7890
+
+  # macOS 桌面通知
+  local:
+    enabled: true
+    sound: Glass
+
+  # Server酱（微信推送）
+  serverchan:
+    enabled: false
+    send_key: ""
