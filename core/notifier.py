@@ -8,6 +8,7 @@ import logging
 import pathlib
 import re
 import subprocess
+import sys
 import urllib.parse
 import urllib.request
 
@@ -124,7 +125,8 @@ def _read_env_file(path: str) -> dict:
     out = {}
     try:
         fp = pathlib.Path(path).expanduser()
-        for line in fp.read_text(encoding="utf-8").splitlines():
+        # utf-8-sig：兼容 Windows 记事本存的「带 BOM 的 UTF-8」
+        for line in fp.read_text(encoding="utf-8-sig").splitlines():
             line = line.strip()
             if not line or line.startswith("#") or "=" not in line:
                 continue
@@ -244,7 +246,10 @@ def build_notifier(cfg: dict, logger: logging.Logger):
 
     local = (cfg.get("local") or {})
     if local.get("enabled"):
-        channels.append(MacNotifier(logger=logger, sound=local.get("sound", "Glass")))
+        if sys.platform == "darwin":
+            channels.append(MacNotifier(logger=logger, sound=local.get("sound", "Glass")))
+        else:
+            logger.warning("桌面通知(local)只支持 macOS，当前系统已跳过；请用 Telegram 或 Server酱(微信)")
 
     sc = (cfg.get("serverchan") or {})
     if sc.get("enabled") and sc.get("send_key"):

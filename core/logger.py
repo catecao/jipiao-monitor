@@ -1,6 +1,7 @@
 """日志配置"""
 import logging
 import os
+import sys
 from logging.handlers import RotatingFileHandler
 
 
@@ -20,7 +21,9 @@ def setup_logger(log_path: str, name: str = "jipiao") -> logging.Logger:
     fh.setFormatter(fmt)
     logger.addHandler(fh)
 
-    ch = logging.StreamHandler()
-    ch.setFormatter(fmt)
-    logger.addHandler(ch)
+    # Windows 用 pythonw 后台运行时没有控制台（sys.stderr 为 None），只写文件
+    if sys.stderr is not None:
+        ch = logging.StreamHandler()
+        ch.setFormatter(fmt)
+        logger.addHandler(ch)
     return logger

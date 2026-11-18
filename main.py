@@ -25,8 +25,19 @@ from crawlers import REGISTRY
 
 
 def load_config(path: str) -> dict:
-    with open(path, "r", encoding="utf-8") as f:
-        return yaml.safe_load(f)
+    try:
+        # utf-8-sig：兼容 Windows 记事本存的「带 BOM 的 UTF-8」
+        with open(path, "r", encoding="utf-8-sig") as f:
+            return yaml.safe_load(f)
+    except UnicodeDecodeError:
+        msg = (f"配置文件 {path} 不是 UTF-8 编码。请用记事本打开，"
+               "「另存为」时编码选 UTF-8 后保存，再重新启动。\n")
+        # 日志还没初始化，且 Windows 后台(pythonw)没有控制台：写一个文件留痕
+        os.makedirs("logs", exist_ok=True)
+        with open(os.path.join("logs", "startup_error.txt"), "w", encoding="utf-8") as f:
+            f.write(msg)
+        print(msg, file=sys.stderr) if sys.stderr else None
+        sys.exit(1)
 
 
 def build_routes(cfg: dict):
@@ -78,8 +89,7 @@ def make_job(cfg: dict, logger, storage: PriceStorage, alerter: Alerter):
             # 只有「确实配置了日期、全部能解析、且都早于今天」才停服务；配置异常只报错不停
             all_dates = [d for r in routes for d in r.dates]
             if routes and all_dates and not bad:
-                expire_and_stop(logger, alerter, routes,
-                                (cfg.get("service") or {}).get("launchd_label", DEFAULT_LAUNCHD_LABEL))
+                expire_and_stop(logger, alerter, routes, cfg.get("service") or {})
             else:
                 logger.error("没有可查询的日期（routes/dates 为空或格式错误），本轮跳过，服务不停")
             return
@@ -110,12 +120,34 @@ def make_job(cfg: dict, logger, storage: PriceStorage, alerter: Alerter):
 DEFAULT_LAUNCHD_LABEL = "com.jipiao.monitor"
 
 
-def expire_and_stop(logger, alerter, routes, launchd_label: str = DEFAULT_LAUNCHD_LABEL):
-    """所有监控日期已过：通知一次；macOS 上 launchctl disable（重启/登录后不再拉起）；然后退出码 0。
-    配合 plist 的 KeepAlive = {SuccessfulExit: false}，正常退出不会被 launchd 重启。
-    非 macOS 或没用 launchd 时，disable 失败只记日志，进程照样退出。
-    重新开启见 README「到期自动停」一节。
+DEFAULT_WINDOWS_TASK = "JiPiaoMonitor"
+
+
+def _disable_service(logger, service_cfg: dict):
+    """停用后台服务，让它重启电脑/重新登录后也不再启动。
+    macOS：launchctl disable（配合 plist KeepAlive={SuccessfulExit:false}，退出码 0 不被拉起）
+    Windows：schtasks 停用计划任务
+    其他系统或没装成服务：失败只记日志。
     """
+    if sys.platform == "darwin":
+        label = service_cfg.get("launchd_label", DEFAULT_LAUNCHD_LABEL)
+        cmd = ["launchctl", "disable", f"gui/{os.getuid()}/{label}"]
+    elif sys.platform == "win32":
+        task = service_cfg.get("windows_task_name", DEFAULT_WINDOWS_TASK)
+        cmd = ["schtasks", "/Change", "/TN", task, "/DISABLE"]
+    else:
+        logger.info("当前系统不自动停用服务，进程直接退出")
+        return
+    try:
+        r = subprocess.run(cmd, check=False, timeout=15, capture_output=True)
+        out = (r.stdout + r.stderr).decode("utf-8" if sys.platform != "win32" else "gbk", errors="replace").strip()
+        logger.info("停用后台服务 %s 返回码 %s %s", " ".join(cmd), r.returncode, out[:200])
+    except Exception as e:
+        logger.warning("停用后台服务失败: %s", e)
+
+
+def expire_and_stop(logger, alerter, routes, service_cfg: dict = None):
+    """所有监控日期已过：推送一次通知 → 停用后台服务 → 退出码 0。重新开启见 README「到期自动停」。"""
     desc = "；".join(f"{r.from_name}→{r.to_name} {','.join(map(str, r.dates))}" for r in routes)
     logger.info("所有监控日期均已过期（%s），停止服务", desc)
     notifier = getattr(alerter, "notifier", None)
@@ -124,12 +156,7 @@ def expire_and_stop(logger, alerter, routes, launchd_label: str = DEFAULT_LAUNCH
             notifier.send("机票监控已到期停止", f"{desc}\n日期都已过，服务已停用。改好 config.yaml 后按 README 重新开启。")
         except Exception as e:
             logger.warning("到期通知发送失败: %s", e)
-    try:
-        rc = subprocess.run(["launchctl", "disable", f"gui/{os.getuid()}/{launchd_label}"],
-                            check=False, timeout=15).returncode
-        logger.info("launchctl disable 返回码 %s", rc)
-    except Exception as e:
-        logger.warning("launchctl disable 失败: %s", e)
+    _disable_service(logger, service_cfg or {})
     logging_shutdown()
     os._exit(0)  # 在调度线程里也能直接结束进程
 
